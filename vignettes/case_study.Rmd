@@ -1,0 +1,239 @@
+---
+title: "Abraxas Demand Forecasting (Data Prep)"
+author: "Enrique López <enrique_lcbjj@hotmail.com>"
+date: "10/30/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("../")
+```
+
+
+## Data gathering
+```{r}
+require("tidyverse")
+require("magrittr")
+require("ggplot2")
+
+clients <- read_csv(
+  "../data/cliente_tabla.csv", 
+  col_types = cols(
+    Cliente_ID = col_integer()
+  ))
+
+products <- read_csv(
+  "../data/producto_tabla.csv",
+  col_types = cols(
+    Producto_ID = col_integer()
+  ))
+
+depots <- read_csv(
+  "../data/town_state_small.csv",
+  col_types = cols(
+    Agencia_ID = col_integer()
+  )) 
+
+train <- read_csv(
+  "../data/df_[candidate]_small.csv",
+  col_types = cols(
+    Agencia_ID = col_integer(),
+    Canal_ID = col_integer(),
+    Cliente_ID = col_integer(),
+    Producto_ID = col_integer()
+  )) %>% mutate(ID = 1:nrow(.))
+
+test <- read_csv(
+  "../data/df_[test]_small.csv",
+  col_types = cols(
+    Agencia_ID = col_integer(),
+    Canal_ID = col_integer(),
+    Cliente_ID = col_integer(),
+    Producto_ID = col_integer()
+  )) %>% mutate(ID = 1:nrow(.))
+```
+
+## Data preparation
+
+### Exploratory Analysis
+
+```{r}
+require("summarytools")
+require("visdat")
+```
+
+```{r}
+dfSummary(clients)
+```
+
+```{r}
+dfSummary(products, 
+  plain.ascii = FALSE, 
+  style = "grid", 
+  graph.magnif = 0.75,
+  valid.col = FALSE,
+  tmp.img.dir = "/tmp")
+```
+
+```{r}
+dfSummary(depots,
+  plain.ascii = FALSE, 
+  style = "grid", 
+  graph.magnif = 0.75,
+  valid.col = FALSE,
+  tmp.img.dir = "/tmp")
+```
+
+```{r}
+dfSummary(train,
+  plain.ascii = FALSE, 
+  style = "grid", 
+  graph.magnif = 0.75,
+  valid.col = FALSE,
+  tmp.img.dir = "/tmp")
+```
+
+```{r}
+dfSummary(test,
+  plain.ascii = FALSE, 
+  style = "grid", 
+  graph.magnif = 0.75,
+  valid.col = FALSE,
+  tmp.img.dir = "/tmp")
+```
+
+```{r}
+test %>% anti_join(train %>% select(Producto_ID) %>% distinct()) %>% count()
+```
+Searching for new products in the test set, there are 20 new products which is a really small portion of the total 1.3M of test products.
+
+### Wrangling
+
+```{r}
+clients %<>% 
+  group_by(Cliente_ID) %>% 
+  summarise(NombreCliente = first(NombreCliente))
+```
+Since Data Files set is properly tied to Cliente_ID, for our purposes we can safely discard those repeated names and use the first occurrence of a Cliente_ID - NombreCliente pair as a person.
+
+To capture the greater or equal than 0 effect in demand, we smooth Demanda_uni_equil logarithmically.
+We also use an artificiall 0 demand for testing set, to avoid the problems NA may arise.
+And finally add the 9 
+```{r}
+train %<>% mutate(Demanda_uni_equil = log1p(Demanda_uni_equil), Type = "train")
+test %<>% mutate(Demanda_uni_equil = 0, Type = "test")
+
+DF <- train %>% filter(Semana == 8) %>% 
+  bind_rows(test)
+
+#now compute mean demand + count on train weeks 3 - 7 then join with weeks 8, 9:
+DF %<>% left_join((train %>% 
+    filter(Semana < 8) %>% 
+    group_by(Producto_ID, Cliente_ID) %>% 
+    summarise(
+      m_PC = mean(Demanda_uni_equil),
+      N_PC= n())), by = c("Producto_ID", "Cliente_ID")) %>% 
+  left_join((train %>% 
+    filter(Semana < 8) %>% 
+    group_by(Producto_ID) %>% 
+    summarise(
+      m_P = mean(Demanda_uni_equil),
+      N_P = n())), by = c("Producto_ID")) %>% 
+  left_join((train %>% 
+    filter(Semana < 8) %>% 
+    group_by(Cliente_ID) %>% 
+    summarise(
+      m_C = mean(Demanda_uni_equil),
+      N_C= n())), by = c("Cliente_ID"))
+```
+
+
+### Splitting
+
+Since data is already splitted we can skip this step.
+
+## Model Selection
+
+Using an educated guest, the proposed algorithm is an eXtreme Gradient BOOSTing, noting the following:
+  - While we do have a sequential prediction task, our data could be characterised as numerical big data.
+  - 8 time observations makes it a time-series, GLM or regression based approach unfeasible.
+  - Aside from weeks, we only have categorical covariables which aren't suited to give ordinal predictability.
+  - As we do have several observations for a given week, we can aggregate summary statistics grouping by covariables.
+
+```{r}
+library(xgboost)
+```
+
+## Training
+
+```{r}
+
+#boosting on week 9 of train - around 10 million training examples:
+D_label <- DF %>% 
+  filter(Type == "train") %>% 
+  select(Demanda_uni_equil) %>% unlist()
+
+D_ <- as.matrix(DF %>% 
+    filter(Type == "train") %>% 
+    select(-Demanda_uni_equil, -ID, -Type))
+D_data <- xgb.DMatrix(D_,
+  label = D_label)
+
+model <- xgb.train(params=list(  
+    objective="reg:linear", 
+    booster = "gbtree",
+    eta=0.5, # 0.1, 
+    max_depth=8, # 10, 
+    subsample=0.85,
+    colsample_bytree=0.7) ,
+  data = D_data, 
+  nrounds = 25, # 75, 
+  verbose = 1,
+  print_every_n=5,
+  maximize=FALSE,
+  eval_metric='rmse')
+
+```
+
+## Evaluation
+  - SHAP
+  - RMSE
+  - xgb.plot
+  
+
+```{r}
+require("Ckmeans.1d.dp")
+
+importance <- xgb.importance(
+  feature_names = colnames(D_data),
+  model = model
+) 
+xgb.ggplot.importance(importance)
+```
+
+```{r}
+xgb.ggplot.deepness(model)
+```
+
+## Prediction
+```{r}
+D_pred <- predict(model, as.matrix(DF %>% filter(Type == "test") %>% 
+    select(-Demanda_uni_equil, -ID, -Type)))
+D_pred = expm1(D_pred)
+D_pred[D_pred < 0] = 0
+DF_hat <- DF %>% filter(Type == "test") %>% 
+  select(ID, Semana, Agencia_ID, Cliente_ID, Producto_ID) %>% 
+  mutate(Demanda_uni_equil = D_pred)
+
+DF_ <- train %>% filter(Type == "train") %>% 
+  select(ID, Semana, Agencia_ID, Cliente_ID, Producto_ID, Demanda_uni_equil) %>% 
+  bind_rows(DF_hat)
+  
+
+write_csv(DF_, "../data/df_[final]_small.csv")
+```
+
+## Visualization
+
+Run the shiny app.
