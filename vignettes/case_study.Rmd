@@ -13,6 +13,7 @@ setwd("../")
 
 ## Data gathering
 ```{r}
+#install.packages(c("Ckmeans.1d.dp", "ggplot2", "knitr", "summarytools", "tidyverse", "visdat", "xgboost", "markdown", "stringr", "Rcpp", "htmltools", "rprojroot", "rmarkdown"))
 require("tidyverse")
 require("magrittr")
 require("ggplot2")
@@ -123,7 +124,6 @@ And finally add the 9
 ```{r}
 train %<>% mutate(Demanda_uni_equil = log1p(Demanda_uni_equil), Type = "train")
 test %<>% mutate(Demanda_uni_equil = 0, Type = "test")
-install.packages(c("Ckmeans.1d.dp", "ggplot2", "knitr", "summarytools", "tidyverse", "visdat", "xgboost", "markdown", "stringr", "Rcpp", "htmltools", "knitr", "rprojroot", "rmarkdown"))
 ```
 
 We counter the high categorical cardinality with a frequency-severity grouped by covariables approach inspired in actuarial science techniques.
