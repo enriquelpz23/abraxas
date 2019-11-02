@@ -123,17 +123,45 @@ And finally add the 9
 ```{r}
 train %<>% mutate(Demanda_uni_equil = log1p(Demanda_uni_equil), Type = "train")
 test %<>% mutate(Demanda_uni_equil = 0, Type = "test")
+install.packages(c("Ckmeans.1d.dp", "ggplot2", "knitr", "summarytools", "tidyverse", "visdat", "xgboost", "markdown", "stringr", "Rcpp", "htmltools", "knitr", "rprojroot", "rmarkdown"))
+```
 
+We counter the high categorical cardinality with a frequency-severity grouped by covariables approach inspired in actuarial science techniques.
+```{r}
 DF <- train %>% filter(Semana == 8) %>% 
   bind_rows(test)
 
 #now compute mean demand + count on train weeks 3 - 7 then join with weeks 8, 9:
 DF %<>% left_join((train %>% 
     filter(Semana < 8) %>% 
+    group_by(Agencia_ID, Producto_ID, Cliente_ID) %>% 
+    summarise(
+      m_APC = mean(Demanda_uni_equil),
+      N_APC= n())), by = c("Agencia_ID", "Producto_ID", "Cliente_ID")) %>%
+  left_join((train %>% 
+    filter(Semana < 8) %>% 
+    group_by(Agencia_ID, Producto_ID) %>% 
+    summarise(
+      m_AP = mean(Demanda_uni_equil),
+      N_AP= n())), by = c("Agencia_ID", "Producto_ID")) %>%
+  left_join((train %>% 
+    filter(Semana < 8) %>% 
     group_by(Producto_ID, Cliente_ID) %>% 
     summarise(
       m_PC = mean(Demanda_uni_equil),
       N_PC= n())), by = c("Producto_ID", "Cliente_ID")) %>% 
+  left_join((train %>% 
+    filter(Semana < 8) %>% 
+    group_by(Agencia_ID, Cliente_ID) %>% 
+    summarise(
+      m_AC = mean(Demanda_uni_equil),
+      N_AC= n())), by = c("Agencia_ID", "Cliente_ID")) %>%
+  left_join((train %>% 
+    filter(Semana < 8) %>% 
+    group_by(Agencia_ID) %>% 
+    summarise(
+      m_C = mean(Demanda_uni_equil),
+      N_C= n())), by = c("Agencia_ID")) %>% 
   left_join((train %>% 
     filter(Semana < 8) %>% 
     group_by(Producto_ID) %>% 
@@ -156,8 +184,9 @@ Since data is already splitted we can skip this step.
 ## Model Selection
 
 Using an educated guest, the proposed algorithm is an eXtreme Gradient BOOSTing, noting the following:
+
   - While we do have a sequential prediction task, our data could be characterised as numerical big data.
-  - 8 time observations makes it a time-series, GLM or regression based approach unfeasible.
+  - 8 time observations makes a time-series, GLM or regression based approach unfeasible.
   - Aside from weeks, we only have categorical covariables which aren't suited to give ordinal predictability.
   - As we do have several observations for a given week, we can aggregate summary statistics grouping by covariables.
 
@@ -169,7 +198,8 @@ library(xgboost)
 
 ```{r}
 
-#boosting on week 9 of train - around 10 million training examples:
+# Boosting on week 9 of train
+# Around 10 million training examples:
 D_label <- DF %>% 
   filter(Type == "train") %>% 
   select(Demanda_uni_equil) %>% unlist()
@@ -183,7 +213,7 @@ D_data <- xgb.DMatrix(D_,
 model <- xgb.train(params=list(  
     objective="reg:linear", 
     booster = "gbtree",
-    eta=0.5, # 0.1, 
+    eta=0.5, # 0.1, patience with slower learning rate s
     max_depth=8, # 10, 
     subsample=0.85,
     colsample_bytree=0.7) ,
